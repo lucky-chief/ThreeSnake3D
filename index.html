@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Three.js 贪吃蛇游戏</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="game-container">
+        <div id="ui">
+            <div id="score">得分: <span id="score-value">0</span></div>
+            <div id="game-status">按空格键开始游戏</div>
+            <div id="controls">
+                <div>鼠标移动：控制蛇的方向</div>
+                <div>鼠标拖拽：围绕蛇头旋转视角</div>
+                <div>滚轮：缩放视角</div>
+                <div>空格键：开始/暂停</div>
+                <div>R键：重新开始</div>
+            </div>
+        </div>
+        <div id="game-canvas"></div>
+    </div>
+    
+    <script type="module" src="main.js"></script>
+</body>
+</html> 
