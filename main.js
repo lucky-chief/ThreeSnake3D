@@ -17,7 +17,7 @@ class ThirdPersonCamera {
             followSpeed: 0.1,      // 跟随速度
             lookAtSpeed: 0.1,      // 看向目标的速度
             mouseSensitivity: 0.003, // 鼠标敏感度
-            dampingFactor: 0.95,   // 阻尼因子
+            dampingFactor: 0.35,   // 阻尼因子
             minPolarAngle: 0.1,    // 最小极角
             maxPolarAngle: Math.PI - 0.1 // 最大极角
         };
@@ -85,7 +85,7 @@ class ThirdPersonCamera {
         
         // 更新球坐标
         this.sphericalDelta.theta = -deltaX * this.config.mouseSensitivity;
-        this.sphericalDelta.phi = deltaY * this.config.mouseSensitivity;
+        this.sphericalDelta.phi = -deltaY * this.config.mouseSensitivity;
         
         this.mouseDownX = event.clientX;
         this.mouseDownY = event.clientY;
@@ -98,7 +98,7 @@ class ThirdPersonCamera {
     }
     
     onWheel(event) {
-        const delta = event.deltaY * 0.001;
+        const delta = event.deltaY * 0.01;
         this.config.distance += delta * this.config.distance * 0.1;
         this.config.distance = Math.max(
             this.config.minDistance,
@@ -173,6 +173,17 @@ class SnakeGame {
         this.TURN_SPEED = 0.16; // 增加转弯速度让移动更平滑
         this.SMOOTH_FACTOR = 0.6; // 平滑移动因子
         
+        // 难度控制配置
+        this.DIFFICULTY_CONFIG = {
+            baseSpeed: 10.5,           // 基础移动速度
+            initialLength: 3,          // 初始蛇长度
+            maxSpeed: 25.0,            // 最大移动速度
+            linearGrowth: 0.8,         // 线性增长系数
+            exponentialGrowth: 1.05,   // 指数增长系数
+            logGrowth: 2.0,            // 对数增长系数
+            speedIncreaseThreshold: 5  // 每增长多少长度显著提升速度
+        };
+        
         // 游戏状态
         this.gameState = 'waiting'; // 'waiting', 'playing', 'paused', 'gameOver'
         this.score = 0;
@@ -211,7 +222,7 @@ class SnakeGame {
         // 目标方向和当前方向
         this.targetDirection = 0; // 弧度
         this.currentDirection = 0; // 弧度
-        this.moveSpeed = 10.5; // 稍微增加移动速度
+        this.moveSpeed = this.DIFFICULTY_CONFIG.baseSpeed; // 使用配置中的基础速度
         
         // 食物位置
         this.food = { x: 20, y: 20 };
@@ -230,11 +241,19 @@ class SnakeGame {
         this.foodMesh = null;
         this.boardMesh = null;
         
-        // 性能优化相关
+        // 性能优化相关 - Mesh池系统
         this.snakeGeometry = null;
         this.headGeometry = null;
         this.snakeMaterial = null;
         this.headMaterial = null;
+        this.foodGeometry = null;
+        this.foodMaterial = null;
+        this.meshPool = {
+            headMeshes: [],      // 蛇头mesh池
+            bodyMeshes: [],      // 蛇身mesh池
+            usedHeadMeshes: 0,   // 已使用的蛇头mesh数量
+            usedBodyMeshes: 0    // 已使用的蛇身mesh数量
+        };
         this.lastSnakeLength = 0;
         this.lastUpdateTime = 0;
         this.targetFPS = 60;
@@ -250,6 +269,83 @@ class SnakeGame {
         this.init();
         this.setupEventListeners();
         this.animate();
+    }
+    
+    /**
+     * 难度控制曲线函数 - 根据蛇的长度计算移动速度
+     * 使用组合曲线：线性 + 指数 + 对数增长，确保平滑且有挑战性的难度提升
+     * @param {number} length - 当前蛇的长度
+     * @returns {number} 计算出的移动速度
+     */
+    calculateSpeedFromLength(length) {
+        const config = this.DIFFICULTY_CONFIG;
+        const lengthDiff = Math.max(0, length - config.initialLength);
+        
+        if (lengthDiff === 0) {
+            return config.baseSpeed;
+        }
+        
+        // 分阶段增长曲线
+        let speedIncrease = 0;
+        
+        // 第一阶段：线性增长 (长度3-8)
+        if (lengthDiff <= 10) {
+            speedIncrease = lengthDiff * config.linearGrowth;
+        } 
+        // 第二阶段：指数增长 (长度8-15)
+        else if (lengthDiff <= 30) {
+            const baseIncrease = 5 * config.linearGrowth;
+            const exponentialPart = (lengthDiff - 5) * config.linearGrowth * Math.pow(config.exponentialGrowth, (lengthDiff - 5) * 0.1);
+            speedIncrease = baseIncrease + exponentialPart;
+        }
+        // 第三阶段：对数增长 (长度15+) - 防止速度过快
+        else {
+            const baseIncrease = 5 * config.linearGrowth;
+            const exponentialPart = 7 * config.linearGrowth * Math.pow(config.exponentialGrowth, 0.7);
+            const logPart = Math.log(lengthDiff - 7) * config.logGrowth;
+            speedIncrease = baseIncrease + exponentialPart + logPart;
+        }
+        
+        // 计算最终速度并限制在最大值内
+        const finalSpeed = config.baseSpeed + speedIncrease;
+        return Math.min(finalSpeed, config.maxSpeed);
+    }
+    
+    /**
+     * 获取当前难度等级描述
+     * @param {number} length - 当前蛇的长度
+     * @returns {string} 难度等级描述
+     */
+    getDifficultyLevel(length) {
+        if (length <= 12) return "简单";
+        if (length <= 25) return "普通";
+        if (length <= 40) return "困难";
+        if (length <= 60) return "极难";
+        return "地狱";
+    }
+    
+    /**
+     * 更新移动速度和相关UI显示
+     */
+    updateDifficulty() {
+        const oldSpeed = this.moveSpeed;
+        const newSpeed = this.calculateSpeedFromLength(this.snake.length);
+        
+        this.moveSpeed = newSpeed;
+        
+        // 更新UI显示当前难度
+        const difficultyLevel = this.getDifficultyLevel(this.snake.length);
+        const speedDisplay = newSpeed.toFixed(1);
+        
+        // 在控制台显示难度变化信息
+        if (Math.abs(newSpeed - oldSpeed) > 0.1) {
+            console.log(`难度提升！长度: ${this.snake.length}, 速度: ${speedDisplay}, 等级: ${difficultyLevel}`);
+        }
+        
+        // 更新状态显示
+        if (this.gameState === 'playing') {
+            this.statusElement.textContent = `游戏进行中 - 长度: ${this.snake.length} | 速度: ${speedDisplay} | 难度: ${difficultyLevel}`;
+        }
     }
     
     init() {
@@ -291,6 +387,20 @@ class SnakeGame {
         this.stats.dom.style.zIndex = '1000';
         document.body.appendChild(this.stats.dom);
         
+        // 添加mesh池状态显示
+        this.meshPoolInfo = document.createElement('div');
+        this.meshPoolInfo.style.position = 'absolute';
+        this.meshPoolInfo.style.left = '10px';
+        this.meshPoolInfo.style.top = '150px';
+        this.meshPoolInfo.style.color = 'white';
+        this.meshPoolInfo.style.fontSize = '12px';
+        this.meshPoolInfo.style.fontFamily = 'monospace';
+        this.meshPoolInfo.style.backgroundColor = 'rgba(0,0,0,0.7)';
+        this.meshPoolInfo.style.padding = '5px';
+        this.meshPoolInfo.style.borderRadius = '3px';
+        this.meshPoolInfo.style.zIndex = '1000';
+        document.body.appendChild(this.meshPoolInfo);
+        
         // 添加灯光
         this.setupLighting();
         
@@ -305,6 +415,9 @@ class SnakeGame {
         
         // 创建食物
         this.createFood();
+        
+        // 初始化难度
+        this.updateDifficulty();
     }
     
     getSnakeHeadWorldPosition() {
@@ -418,43 +531,104 @@ class SnakeGame {
             color: 0x00cc66,
             shininess: 80
         });
+        
+        // 创建共享的食物几何体和材质
+        this.foodGeometry = new THREE.SphereGeometry(this.GRID_SIZE * 0.3, 16, 16);
+        this.foodMaterial = new THREE.MeshPhongMaterial({ 
+            color: 0xff4444,
+            shininess: 100,
+            emissive: 0x440000
+        });
     }
     
     createSnake() {
         const currentLength = this.snake.length;
         
-        // 如果蛇长度变化，调整mesh数量
-        if (currentLength !== this.lastSnakeLength) {
-            // 如果蛇变长，添加新的mesh
-            if (currentLength > this.lastSnakeLength) {
-                for (let i = this.lastSnakeLength; i < currentLength; i++) {
-                    let mesh;
-                    if (i === 0) {
-                        // 蛇头
-                        mesh = new THREE.Mesh(this.headGeometry, this.headMaterial);
-                    } else {
-                        // 蛇身
-                        mesh = new THREE.Mesh(this.snakeGeometry, this.snakeMaterial);
-                        mesh.rotation.x = Math.PI / 8;
-                        mesh.rotation.y = i * 0.1;
-                    }
-                    mesh.castShadow = true;
-                    this.snakeMeshes.push(mesh);
-                    this.scene.add(mesh);
-                }
+        // 重置mesh使用计数
+        this.meshPool.usedHeadMeshes = 0;
+        this.meshPool.usedBodyMeshes = 0;
+        
+        // 隐藏所有mesh
+        this.meshPool.headMeshes.forEach(mesh => mesh.visible = false);
+        this.meshPool.bodyMeshes.forEach(mesh => mesh.visible = false);
+        
+        // 为每个蛇段分配mesh
+        this.snake.forEach((segment, index) => {
+            let mesh;
+            
+            if (index === 0) {
+                // 蛇头
+                mesh = this.getHeadMesh();
+            } else {
+                // 蛇身
+                mesh = this.getBodyMesh();
+                mesh.rotation.x = Math.PI / 8;
+                mesh.rotation.z = index * 0.1;
             }
-            // 如果蛇变短，移除多余的mesh
-            else if (currentLength < this.lastSnakeLength) {
-                for (let i = currentLength; i < this.lastSnakeLength; i++) {
-                    const mesh = this.snakeMeshes.pop();
-                    this.scene.remove(mesh);
-                }
-            }
-            this.lastSnakeLength = currentLength;
-        }
+            
+            // 显示mesh
+            mesh.visible = true;
+            
+            // 更新snakeMeshes数组
+            this.snakeMeshes[index] = mesh;
+        });
+        
+        // 移除多余的引用
+        this.snakeMeshes.length = currentLength;
         
         // 更新所有mesh的位置
         this.updateSnakePositions();
+        
+        // 更新mesh池信息显示
+        this.updateMeshPoolInfo();
+    }
+    
+    // 获取蛇头mesh（从池中或创建新的）
+    getHeadMesh() {
+        if (this.meshPool.usedHeadMeshes < this.meshPool.headMeshes.length) {
+            return this.meshPool.headMeshes[this.meshPool.usedHeadMeshes++];
+        }
+        
+        // 创建新的蛇头mesh
+        const mesh = new THREE.Mesh(this.headGeometry, this.headMaterial);
+        mesh.castShadow = true;
+        this.scene.add(mesh);
+        this.meshPool.headMeshes.push(mesh);
+        this.meshPool.usedHeadMeshes++;
+        
+        return mesh;
+    }
+    
+    // 获取蛇身mesh（从池中或创建新的）
+    getBodyMesh() {
+        if (this.meshPool.usedBodyMeshes < this.meshPool.bodyMeshes.length) {
+            return this.meshPool.bodyMeshes[this.meshPool.usedBodyMeshes++];
+        }
+        
+        // 创建新的蛇身mesh
+        const mesh = new THREE.Mesh(this.snakeGeometry, this.snakeMaterial);
+        mesh.castShadow = true;
+        this.scene.add(mesh);
+        this.meshPool.bodyMeshes.push(mesh);
+        this.meshPool.usedBodyMeshes++;
+        
+        return mesh;
+    }
+    
+    // 更新mesh池信息显示
+    updateMeshPoolInfo() {
+        const headPoolSize = this.meshPool.headMeshes.length;
+        const bodyPoolSize = this.meshPool.bodyMeshes.length;
+        const usedHead = this.meshPool.usedHeadMeshes;
+        const usedBody = this.meshPool.usedBodyMeshes;
+        
+        this.meshPoolInfo.innerHTML = `
+            <div>Mesh池状态:</div>
+            <div>蛇头: ${usedHead}/${headPoolSize}</div>
+            <div>蛇身: ${usedBody}/${bodyPoolSize}</div>
+            <div>总复用: ${headPoolSize + bodyPoolSize}</div>
+            <div>蛇长度: ${this.snake.length}</div>
+        `;
     }
     
     updateSnakePositions() {
@@ -477,26 +651,25 @@ class SnakeGame {
     }
     
     createFood() {
-        if (this.foodMesh) {
-            this.scene.remove(this.foodMesh);
+        // 如果食物mesh不存在，创建它
+        if (!this.foodMesh) {
+            this.foodMesh = new THREE.Mesh(this.foodGeometry, this.foodMaterial);
+            this.foodMesh.castShadow = true;
+            this.scene.add(this.foodMesh);
         }
         
-        const geometry = new THREE.SphereGeometry(this.GRID_SIZE * 0.3, 16, 16);
-        const material = new THREE.MeshPhongMaterial({ 
-            color: 0xff4444,
-            shininess: 100,
-            emissive: 0x440000
-        });
-        
-        this.foodMesh = new THREE.Mesh(geometry, material);
-        this.foodMesh.position.set(
-            this.food.x * this.GRID_SIZE - (this.BOARD_SIZE * this.GRID_SIZE) / 2 + this.GRID_SIZE / 2,
-            this.GRID_SIZE / 2,
-            this.food.y * this.GRID_SIZE - (this.BOARD_SIZE * this.GRID_SIZE) / 2 + this.GRID_SIZE / 2
-        );
-        this.foodMesh.castShadow = true;
-        
-        this.scene.add(this.foodMesh);
+        // 更新食物位置
+        this.updateFoodPosition();
+    }
+    
+    updateFoodPosition() {
+        if (this.foodMesh) {
+            this.foodMesh.position.set(
+                this.food.x * this.GRID_SIZE - (this.BOARD_SIZE * this.GRID_SIZE) / 2 + this.GRID_SIZE / 2,
+                this.GRID_SIZE / 2,
+                this.food.y * this.GRID_SIZE - (this.BOARD_SIZE * this.GRID_SIZE) / 2 + this.GRID_SIZE / 2
+            );
+        }
     }
     
     generateFood() {
@@ -512,7 +685,7 @@ class SnakeGame {
         ));
         
         this.food = newFood;
-        this.createFood();
+        this.updateFoodPosition(); // 使用updateFoodPosition而不是createFood
     }
     
     setupEventListeners() {
@@ -583,13 +756,11 @@ class SnakeGame {
     startGame() {
         if (this.gameState === 'waiting') {
             this.gameState = 'playing';
-            this.statusElement.textContent = '游戏进行中 - 鼠标控制蛇的移动';
-            this.statusElement.className = '';
+            this.updateDifficulty(); // 更新难度显示
             this.gameLoop();
         } else if (this.gameState === 'paused') {
             this.gameState = 'playing';
-            this.statusElement.textContent = '游戏进行中 - 鼠标控制蛇的移动';
-            this.statusElement.className = '';
+            this.updateDifficulty(); // 更新难度显示
             this.gameLoop();
         }
     }
@@ -637,12 +808,14 @@ class SnakeGame {
         ];
         this.food = { x: 20, y: 20 };
         
+        // 重置难度到初始状态
+        this.updateDifficulty();
+        
         this.updateScore();
         this.statusElement.textContent = '按空格键开始游戏';
         this.statusElement.className = '';
         
-        // 清理旧的蛇meshes
-        this.snakeMeshes.forEach(mesh => this.scene.remove(mesh));
+        // 使用mesh池系统重置蛇，而不是销毁mesh
         this.snakeMeshes = [];
         this.lastSnakeLength = 0;
         
@@ -712,8 +885,15 @@ class SnakeGame {
             }
         }
         
-        // 修复食物碰撞检测 - 检查蛇头是否碰到食物
-        if (head.x === this.food.x && head.y === this.food.y) {
+        // 食物碰撞检测 - 使用实际坐标距离检测，只要蛇头碰到食物就算吃到
+        const foodWorldX = this.food.x * this.GRID_SIZE;
+        const foodWorldY = this.food.y * this.GRID_SIZE;
+        const dx = head.actualX - foodWorldX;
+        const dy = head.actualY - foodWorldY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        const foodCollisionRadius = this.GRID_SIZE * 0.7; // 碰撞半径，比网格稍小以保持合理性
+        
+        if (distance < foodCollisionRadius) {
             // 增加分数
             this.score += 10;
             this.updateScore();
@@ -734,15 +914,18 @@ class SnakeGame {
             // 创建新的蛇段mesh
             this.createSnake();
             
+            // 更新难度（根据新长度计算速度）
+            this.updateDifficulty();
+            
             // 生成新食物
             this.generateFood();
             
-            // 增加游戏速度
-            if (this.GAME_SPEED > 100) {
-                this.GAME_SPEED -= 2;
-            }
+            // 移除原有的固定速度增加逻辑，现在由难度曲线控制
+            // if (this.GAME_SPEED > 100) {
+            //     this.GAME_SPEED -= 2;
+            // }
             
-            console.log('食物被吃掉，蛇长度：', this.snake.length, '分数：', this.score);
+            console.log('食物被吃掉，蛇长度：', this.snake.length, '分数：', this.score, '当前速度：', this.moveSpeed.toFixed(1));
         }
         
         // 优化的蛇身跟随 - 平滑跟随
@@ -805,6 +988,42 @@ class SnakeGame {
         this.camera.aspect = window.innerWidth / window.innerHeight;
         this.camera.updateProjectionMatrix();
         this.renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+    
+    // 清理所有mesh资源（用于游戏结束或重新初始化）
+    cleanup() {
+        // 清理蛇的mesh池
+        this.meshPool.headMeshes.forEach(mesh => {
+            this.scene.remove(mesh);
+            mesh.geometry.dispose();
+            mesh.material.dispose();
+        });
+        
+        this.meshPool.bodyMeshes.forEach(mesh => {
+            this.scene.remove(mesh);
+            mesh.geometry.dispose();
+            mesh.material.dispose();
+        });
+        
+        // 清理食物mesh
+        if (this.foodMesh) {
+            this.scene.remove(this.foodMesh);
+            this.foodMesh.geometry.dispose();
+            this.foodMesh.material.dispose();
+        }
+        
+        // 重置mesh池
+        this.meshPool = {
+            headMeshes: [],
+            bodyMeshes: [],
+            usedHeadMeshes: 0,
+            usedBodyMeshes: 0
+        };
+        
+        this.snakeMeshes = [];
+        this.foodMesh = null;
+        
+        console.log('游戏资源已清理');
     }
     
     animate() {
