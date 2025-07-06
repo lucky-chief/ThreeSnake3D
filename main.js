@@ -187,6 +187,10 @@ class SnakeGame {
         // 游戏状态
         this.gameState = 'waiting'; // 'waiting', 'playing', 'paused', 'gameOver'
         this.score = 0;
+
+        // 蛇身体缩放比例
+        this.SNAKE_SCALE_START = 1.5;    // 蛇身体起始缩放比例
+        this.SNAKE_SCALE_END = 0.2;    // 蛇身体末端缩放比例
         
         // 蛇的运动状态
         this.snake = [
@@ -203,18 +207,18 @@ class SnakeGame {
                 x: 14, 
                 y: 15, 
                 actualX: 14 * this.GRID_SIZE, 
-                actualY: 14 * this.GRID_SIZE,
+                actualY: 15 * this.GRID_SIZE,
                 targetX: 14 * this.GRID_SIZE,
-                targetY: 14 * this.GRID_SIZE,
+                targetY: 15 * this.GRID_SIZE,
                 rotation: 0 
             },
             { 
                 x: 13, 
                 y: 15, 
                 actualX: 13 * this.GRID_SIZE, 
-                actualY: 13 * this.GRID_SIZE,
+                actualY: 15 * this.GRID_SIZE,
                 targetX: 13 * this.GRID_SIZE,
-                targetY: 13 * this.GRID_SIZE,
+                targetY: 15 * this.GRID_SIZE,
                 rotation: 0 
             }
         ];
@@ -240,6 +244,12 @@ class SnakeGame {
         this.snakeMeshes = [];
         this.foodMesh = null;
         this.boardMesh = null;
+        this.warningWalls = {
+            top: null,
+            bottom: null,
+            left: null,
+            right: null
+        };
         
         // 性能优化相关 - Mesh池系统
         this.snakeGeometry = null;
@@ -407,6 +417,9 @@ class SnakeGame {
         // 创建游戏板
         this.createBoard();
         
+        // 创建警告墙体
+        this.createWarningWalls();
+        
         // 初始化蛇的几何体和材质
         this.initSnakeGeometry();
         
@@ -515,6 +528,96 @@ class SnakeGame {
         }
     }
     
+    // 创建警告墙体
+    createWarningWalls() {
+        const wallHeight = this.GRID_SIZE * 2;
+        const wallThickness = 2;
+        const boardHalfSize = (this.BOARD_SIZE * this.GRID_SIZE) / 2;
+        
+        // 创建红色材质
+        const warningMaterial = new THREE.MeshPhongMaterial({
+            color: 0xff0000,
+            transparent: true,
+            opacity: 0.7,
+            emissive: 0x330000
+        });
+        
+        // 顶部墙体
+        const topGeometry = new THREE.BoxGeometry(this.BOARD_SIZE * this.GRID_SIZE, wallHeight, wallThickness);
+        this.warningWalls.top = new THREE.Mesh(topGeometry, warningMaterial);
+        this.warningWalls.top.position.set(0, wallHeight / 2, -boardHalfSize - wallThickness / 2);
+        this.warningWalls.top.visible = false;
+        this.scene.add(this.warningWalls.top);
+        
+        // 底部墙体
+        const bottomGeometry = new THREE.BoxGeometry(this.BOARD_SIZE * this.GRID_SIZE, wallHeight, wallThickness);
+        this.warningWalls.bottom = new THREE.Mesh(bottomGeometry, warningMaterial);
+        this.warningWalls.bottom.position.set(0, wallHeight / 2, boardHalfSize + wallThickness / 2);
+        this.warningWalls.bottom.visible = false;
+        this.scene.add(this.warningWalls.bottom);
+        
+        // 左侧墙体
+        const leftGeometry = new THREE.BoxGeometry(wallThickness, wallHeight, this.BOARD_SIZE * this.GRID_SIZE);
+        this.warningWalls.left = new THREE.Mesh(leftGeometry, warningMaterial);
+        this.warningWalls.left.position.set(-boardHalfSize - wallThickness / 2, wallHeight / 2, 0);
+        this.warningWalls.left.visible = false;
+        this.scene.add(this.warningWalls.left);
+        
+        // 右侧墙体
+        const rightGeometry = new THREE.BoxGeometry(wallThickness, wallHeight, this.BOARD_SIZE * this.GRID_SIZE);
+        this.warningWalls.right = new THREE.Mesh(rightGeometry, warningMaterial);
+        this.warningWalls.right.position.set(boardHalfSize + wallThickness / 2, wallHeight / 2, 0);
+        this.warningWalls.right.visible = false;
+        this.scene.add(this.warningWalls.right);
+    }
+    
+    // 更新边界警告
+    updateBoundaryWarning(head) {
+        const warningDistance = this.GRID_SIZE * 3; // 警告距离
+        const maxBoundary = this.BOARD_SIZE * this.GRID_SIZE;
+        
+        // 检查蛇头距离各边界的距离
+        const distanceToTop = head.actualY;              // 距离顶部边界(y=0)
+        const distanceToBottom = maxBoundary - head.actualY; // 距离底部边界
+        const distanceToLeft = head.actualX;             // 距离左边界(x=0)
+        const distanceToRight = maxBoundary - head.actualX;  // 距离右边界
+        
+        // 显示/隐藏警告墙体
+        this.warningWalls.top.visible = distanceToTop < warningDistance;
+        this.warningWalls.bottom.visible = distanceToBottom < warningDistance;
+        this.warningWalls.left.visible = distanceToLeft < warningDistance;
+        this.warningWalls.right.visible = distanceToRight < warningDistance;
+        
+        // 调试输出警告状态
+        const hasWarning = this.warningWalls.top.visible || this.warningWalls.bottom.visible || 
+                          this.warningWalls.left.visible || this.warningWalls.right.visible;
+        if (hasWarning) {
+            const warnings = [];
+            if (this.warningWalls.top.visible) warnings.push('上');
+            if (this.warningWalls.bottom.visible) warnings.push('下');
+            if (this.warningWalls.left.visible) warnings.push('左');
+            if (this.warningWalls.right.visible) warnings.push('右');
+            console.log('⚠️ 边界警告:', warnings.join(', '));
+        }
+        
+        // 添加闪烁效果
+        const time = Date.now() * 0.005;
+        const opacity = 0.4 + Math.sin(time * 1) * 0.3;
+        
+        if (this.warningWalls.top.visible) {
+            this.warningWalls.top.material.opacity = opacity;
+        }
+        if (this.warningWalls.bottom.visible) {
+            this.warningWalls.bottom.material.opacity = opacity;
+        }
+        if (this.warningWalls.left.visible) {
+            this.warningWalls.left.material.opacity = opacity;
+        }
+        if (this.warningWalls.right.visible) {
+            this.warningWalls.right.material.opacity = opacity;
+        }
+    }
+    
     initSnakeGeometry() {
         // 创建共享的几何体
         this.headGeometry = new THREE.SphereGeometry(this.GRID_SIZE * 0.4, 16, 16);
@@ -551,7 +654,7 @@ class SnakeGame {
         // 隐藏所有mesh
         this.meshPool.headMeshes.forEach(mesh => mesh.visible = false);
         this.meshPool.bodyMeshes.forEach(mesh => mesh.visible = false);
-        
+
         // 为每个蛇段分配mesh
         this.snake.forEach((segment, index) => {
             let mesh;
@@ -559,11 +662,16 @@ class SnakeGame {
             if (index === 0) {
                 // 蛇头
                 mesh = this.getHeadMesh();
+                // 蛇头保持原始大小
+                mesh.scale.set(1, 1, 1);
             } else {
                 // 蛇身
                 mesh = this.getBodyMesh();
                 mesh.rotation.x = Math.PI / 8;
                 mesh.rotation.z = index * 0.1;
+                // 蛇身从大到小逐渐缩放
+                const scale = this.SNAKE_SCALE_START + (this.SNAKE_SCALE_END - this.SNAKE_SCALE_START) * index / (currentLength - 1);
+                mesh.scale.set(scale, scale, scale);
             }
             
             // 显示mesh
@@ -769,6 +877,9 @@ class SnakeGame {
         this.gameState = 'paused';
         this.statusElement.textContent = '游戏已暂停';
         this.statusElement.className = 'game-paused';
+        
+        // 隐藏所有警告墙体
+        this.hideAllWarningWalls();
     }
     
     resetGame() {
@@ -791,18 +902,18 @@ class SnakeGame {
                 x: 14, 
                 y: 15, 
                 actualX: 14 * this.GRID_SIZE, 
-                actualY: 14 * this.GRID_SIZE,
+                actualY: 15 * this.GRID_SIZE,
                 targetX: 14 * this.GRID_SIZE,
-                targetY: 14 * this.GRID_SIZE,
+                targetY: 15 * this.GRID_SIZE,
                 rotation: 0 
             },
             { 
                 x: 13, 
                 y: 15, 
                 actualX: 13 * this.GRID_SIZE, 
-                actualY: 13 * this.GRID_SIZE,
+                actualY: 15 * this.GRID_SIZE,
                 targetX: 13 * this.GRID_SIZE,
-                targetY: 13 * this.GRID_SIZE,
+                targetY: 15 * this.GRID_SIZE,
                 rotation: 0 
             }
         ];
@@ -828,6 +939,17 @@ class SnakeGame {
         
         // 重置第三人称相机
         this.thirdPersonCamera.reset();
+        
+        // 隐藏所有警告墙体
+        this.hideAllWarningWalls();
+    }
+    
+    // 隐藏所有警告墙体
+    hideAllWarningWalls() {
+        this.warningWalls.top.visible = false;
+        this.warningWalls.bottom.visible = false;
+        this.warningWalls.left.visible = false;
+        this.warningWalls.right.visible = false;
     }
     
     gameLoop() {
@@ -850,24 +972,32 @@ class SnakeGame {
         
         // 移动蛇头 - 使用目标位置实现平滑移动
         const head = this.snake[0];
-        head.targetX += Math.cos(this.currentDirection) * this.moveSpeed * 0.02;
-        head.targetY += Math.sin(this.currentDirection) * this.moveSpeed * 0.02;
+        const moveSpeedFactor = Math.min(this.moveSpeed * 0.02, 1.0); // 限制最大移动速度
+        head.targetX += Math.cos(this.currentDirection) * moveSpeedFactor;
+        head.targetY += Math.sin(this.currentDirection) * moveSpeedFactor;
         head.rotation = this.currentDirection;
         
         // 平滑插值到目标位置
         head.actualX += (head.targetX - head.actualX) * this.SMOOTH_FACTOR;
         head.actualY += (head.targetY - head.actualY) * this.SMOOTH_FACTOR;
         
-        // 更新网格位置
-        head.x = Math.floor(head.actualX / this.GRID_SIZE);
-        head.y = Math.floor(head.actualY / this.GRID_SIZE);
+        // 检查边界碰撞 - 蛇头出地图就游戏结束
+        const minBoundary = 0;
+        const maxBoundary = this.BOARD_SIZE * this.GRID_SIZE;
         
-        // 检查边界碰撞
-        if (head.x < 0 || head.x >= this.BOARD_SIZE || 
-            head.y < 0 || head.y >= this.BOARD_SIZE) {
+        // 直接检查边界，不阻拦移动
+        if (head.actualX < minBoundary || head.actualX >= maxBoundary || 
+            head.actualY < minBoundary || head.actualY >= maxBoundary) {
             this.gameOver();
             return;
         }
+        
+        // 检查是否靠近边界，显示警告墙体
+        this.updateBoundaryWarning(head);
+        
+        // 更新网格位置
+        head.x = Math.floor(head.actualX / this.GRID_SIZE);
+        head.y = Math.floor(head.actualY / this.GRID_SIZE);
         
         // 优化的自身碰撞检测（跳过前3个段避免误判）
         const collisionRadius = this.GRID_SIZE * 0.8;
@@ -978,6 +1108,9 @@ class SnakeGame {
         this.gameState = 'gameOver';
         this.statusElement.textContent = `游戏结束！得分: ${this.score}`;
         this.statusElement.className = 'game-over';
+        
+        // 隐藏所有警告墙体
+        this.hideAllWarningWalls();
     }
     
     updateScore() {
@@ -1012,6 +1145,15 @@ class SnakeGame {
             this.foodMesh.material.dispose();
         }
         
+        // 清理警告墙体
+        Object.values(this.warningWalls).forEach(wall => {
+            if (wall) {
+                this.scene.remove(wall);
+                wall.geometry.dispose();
+                wall.material.dispose();
+            }
+        });
+        
         // 重置mesh池
         this.meshPool = {
             headMeshes: [],
@@ -1022,6 +1164,12 @@ class SnakeGame {
         
         this.snakeMeshes = [];
         this.foodMesh = null;
+        this.warningWalls = {
+            top: null,
+            bottom: null,
+            left: null,
+            right: null
+        };
         
         console.log('游戏资源已清理');
     }
