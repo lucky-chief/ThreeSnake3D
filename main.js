@@ -38,6 +38,9 @@ class ThirdPersonCamera {
         this.currentPosition = new THREE.Vector3();
         this.desiredPosition = new THREE.Vector3();
         
+        // 抖动偏移
+        this.shakeOffset = null;
+        
         // 初始化
         this.init();
         this.setupEventListeners();
@@ -133,7 +136,14 @@ class ThirdPersonCamera {
         
         // 平滑移动相机
         this.currentPosition.lerp(this.desiredPosition, this.config.followSpeed);
-        this.camera.position.copy(this.currentPosition);
+        
+        // 应用抖动偏移
+        const finalPosition = this.currentPosition.clone();
+        if (this.shakeOffset) {
+            finalPosition.add(this.shakeOffset);
+        }
+        
+        this.camera.position.copy(finalPosition);
         
         // 平滑朝向目标
         const lookAtTarget = this.currentTarget.clone();
@@ -184,14 +194,38 @@ class SnakeGame {
             speedIncreaseThreshold: 5  // 每增长多少长度显著提升速度
         };
         
-        // 游戏状态
-        this.gameState = 'waiting'; // 'waiting', 'playing', 'paused', 'gameOver'
-        this.score = 0;
-
         // 蛇身体缩放比例
         this.SNAKE_SCALE_START = 1.5;    // 蛇身体起始缩放比例
         this.SNAKE_SCALE_END = 0.2;    // 蛇身体末端缩放比例
         
+        // 障碍物系统
+        this.obstacles = [];              // 障碍物数组
+        this.obstacleGeometry = null;     // 障碍物几何体
+        this.obstacleMaterial = null;     // 障碍物材质
+        this.nextObstacleTime = 0;        // 下一个障碍物生成时间
+        this.obstacleMinInterval = 8000;  // 最小生成间隔（毫秒）
+        this.obstacleMaxInterval = 15000; // 最大生成间隔（毫秒）
+        this.maxObstacles = 5;            // 最大障碍物数量
+        this.obstacleTextMaterial = null; // 障碍物文本材质
+        
+        // 相机抖动和眩晕效果
+        this.cameraShake = {
+            isShaking: false,
+            intensity: 0,
+            duration: 0,
+            elapsed: 0
+        };
+        this.snakeStunned = {
+            isStunned: false,
+            duration: 0,
+            elapsed: 0,
+            originalSpeed: 0
+        };
+        
+        // 游戏状态
+        this.gameState = 'waiting'; // 'waiting', 'playing', 'paused', 'gameOver'
+        this.score = 0;
+
         // 蛇的运动状态
         this.snake = [
             { 
@@ -642,6 +676,104 @@ class SnakeGame {
             shininess: 100,
             emissive: 0x440000
         });
+        
+        // 创建共享的障碍物几何体和材质
+        this.obstacleGeometry = new THREE.BoxGeometry(this.GRID_SIZE * 0.6, this.GRID_SIZE * 0.6, this.GRID_SIZE * 0.6);
+        this.obstacleMaterial = new THREE.MeshPhongMaterial({ 
+            color: 0xffff00,
+            shininess: 80,
+            emissive: 0x444400
+        });
+        
+        // 初始化文本材质
+        this.initTextMaterial();
+    }
+    
+    // 初始化文本材质
+    initTextMaterial() {
+        // 创建文本平面几何体
+        this.textGeometry = new THREE.PlaneGeometry(this.GRID_SIZE * 0.8, this.GRID_SIZE * 0.4);
+    }
+    
+    // 创建文本纹理
+    createTextTexture(text, level) {
+        // 创建canvas
+        const canvas = document.createElement('canvas');
+        canvas.width = 128;
+        canvas.height = 64;
+        const context = canvas.getContext('2d');
+        
+        // 设置背景渐变
+        const gradient = context.createLinearGradient(0, 0, 0, canvas.height);
+        if (level > this.snake.length) {
+            // 危险等级：红色渐变
+            gradient.addColorStop(0, '#ff6666');
+            gradient.addColorStop(1, '#cc2222');
+        } else {
+            // 安全等级：绿色渐变
+            gradient.addColorStop(0, '#66ff66');
+            gradient.addColorStop(1, '#22cc22');
+        }
+        context.fillStyle = gradient;
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // 设置双重边框
+        context.strokeStyle = '#ffffff';
+        context.lineWidth = 4;
+        context.strokeRect(2, 2, canvas.width - 4, canvas.height - 4);
+        
+        context.strokeStyle = level > this.snake.length ? '#ffcccc' : '#ccffcc';
+        context.lineWidth = 2;
+        context.strokeRect(4, 4, canvas.width - 8, canvas.height - 8);
+        
+        // 设置文字阴影
+        context.shadowColor = 'rgba(0, 0, 0, 0.8)';
+        context.shadowBlur = 3;
+        context.shadowOffsetX = 1;
+        context.shadowOffsetY = 1;
+        
+        // 设置文字
+        context.fillStyle = '#ffffff';
+        context.font = 'bold 22px Arial';
+        context.textAlign = 'center';
+        context.textBaseline = 'middle';
+        context.fillText(text, canvas.width / 2, canvas.height / 2);
+        
+        // 创建纹理
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.needsUpdate = true;
+        
+        return texture;
+    }
+    
+    // 生成障碍物等级
+    generateObstacleLevel() {
+        const snakeLength = this.snake.length;
+        
+        // 只生成比蛇长度更大的等级（危险障碍物）
+        const increase = Math.floor(Math.random() * 5) + 1; // 1-5 的随机增长
+        return snakeLength + increase;
+    }
+    
+    // 创建障碍物文本显示
+    createObstacleText(obstacle) {
+        const texture = this.createTextTexture(`LV ${obstacle.level}`, obstacle.level);
+        const material = new THREE.MeshBasicMaterial({ 
+            map: texture, 
+            transparent: true,
+            alphaTest: 0.1
+        });
+        
+        const textMesh = new THREE.Mesh(this.textGeometry, material);
+        
+        // 设置文本位置（在障碍物上方）
+        textMesh.position.copy(obstacle.mesh.position);
+        textMesh.position.y += this.GRID_SIZE * 0.8;
+        
+        // 文本始终面向相机
+        textMesh.lookAt(this.camera.position);
+        
+        return textMesh;
     }
     
     createSnake() {
@@ -730,12 +862,19 @@ class SnakeGame {
         const usedHead = this.meshPool.usedHeadMeshes;
         const usedBody = this.meshPool.usedBodyMeshes;
         
+        // 统计障碍物等级分布
+        const obstacleLevels = this.obstacles.map(obs => obs.level).sort((a, b) => a - b);
+        const levelDisplay = obstacleLevels.length > 0 ? obstacleLevels.join(',') : '无';
+        
         this.meshPoolInfo.innerHTML = `
             <div>Mesh池状态:</div>
             <div>蛇头: ${usedHead}/${headPoolSize}</div>
             <div>蛇身: ${usedBody}/${bodyPoolSize}</div>
             <div>总复用: ${headPoolSize + bodyPoolSize}</div>
             <div>蛇长度: ${this.snake.length}</div>
+            <div>障碍物: ${this.obstacles.length}</div>
+            <div>等级: ${levelDisplay}</div>
+            <div>眩晕: ${this.snakeStunned.isStunned ? '是' : '否'}</div>
         `;
     }
     
@@ -782,15 +921,28 @@ class SnakeGame {
     
     generateFood() {
         let newFood;
+        let attempts = 0;
         do {
             newFood = {
                 x: Math.floor(Math.random() * this.BOARD_SIZE),
                 y: Math.floor(Math.random() * this.BOARD_SIZE)
             };
-        } while (this.snake.some(segment => 
-            Math.floor(segment.actualX / this.GRID_SIZE) === newFood.x && 
-            Math.floor(segment.actualY / this.GRID_SIZE) === newFood.y
-        ));
+            attempts++;
+        } while (this.isPositionOccupied(newFood.x, newFood.y) && attempts < 100);
+        
+        if (attempts >= 100) {
+            console.log('无法找到合适的食物位置');
+            // 如果找不到位置，随机选择一个不与蛇身重叠的位置
+            do {
+                newFood = {
+                    x: Math.floor(Math.random() * this.BOARD_SIZE),
+                    y: Math.floor(Math.random() * this.BOARD_SIZE)
+                };
+            } while (this.snake.some(segment => 
+                Math.floor(segment.actualX / this.GRID_SIZE) === newFood.x && 
+                Math.floor(segment.actualY / this.GRID_SIZE) === newFood.y
+            ));
+        }
         
         this.food = newFood;
         this.updateFoodPosition(); // 使用updateFoodPosition而不是createFood
@@ -865,6 +1017,7 @@ class SnakeGame {
         if (this.gameState === 'waiting') {
             this.gameState = 'playing';
             this.updateDifficulty(); // 更新难度显示
+            this.scheduleNextObstacle(); // 安排第一个障碍物
             this.gameLoop();
         } else if (this.gameState === 'paused') {
             this.gameState = 'playing';
@@ -942,6 +1095,13 @@ class SnakeGame {
         
         // 隐藏所有警告墙体
         this.hideAllWarningWalls();
+        
+        // 清理所有障碍物
+        this.clearAllObstacles();
+        
+        // 重置相机抖动和眩晕状态
+        this.cameraShake.isShaking = false;
+        this.snakeStunned.isStunned = false;
     }
     
     // 隐藏所有警告墙体
@@ -972,9 +1132,21 @@ class SnakeGame {
         
         // 移动蛇头 - 使用目标位置实现平滑移动
         const head = this.snake[0];
-        const moveSpeedFactor = Math.min(this.moveSpeed * 0.02, 1.0); // 限制最大移动速度
-        head.targetX += Math.cos(this.currentDirection) * moveSpeedFactor;
-        head.targetY += Math.sin(this.currentDirection) * moveSpeedFactor;
+        let moveSpeedFactor = Math.min(this.moveSpeed * 0.02, 1.0); // 限制最大移动速度
+        
+        // 如果蛇头眩晕，添加后仰效果
+        let currentDirection = this.currentDirection;
+        if (this.snakeStunned.isStunned) {
+            // 眩晕时后仰（反方向移动）
+            const stunProgress = this.snakeStunned.elapsed / this.snakeStunned.duration;
+            if (stunProgress < 0.5) { // 前半段时间后仰
+                currentDirection = this.currentDirection + Math.PI; // 反方向
+                moveSpeedFactor *= 0.5; // 后仰速度较慢
+            }
+        }
+        
+        head.targetX += Math.cos(currentDirection) * moveSpeedFactor;
+        head.targetY += Math.sin(currentDirection) * moveSpeedFactor;
         head.rotation = this.currentDirection;
         
         // 平滑插值到目标位置
@@ -998,6 +1170,14 @@ class SnakeGame {
         // 更新网格位置
         head.x = Math.floor(head.actualX / this.GRID_SIZE);
         head.y = Math.floor(head.actualY / this.GRID_SIZE);
+        
+        // 更新障碍物系统
+        this.updateObstacleSpawning();
+        this.updateCameraShake();
+        this.updateSnakeStun();
+        
+        // 检查障碍物碰撞（在眩晕状态下也要检查）
+        this.checkObstacleCollision();
         
         // 优化的自身碰撞检测（跳过前3个段避免误判）
         const collisionRadius = this.GRID_SIZE * 0.8;
@@ -1046,6 +1226,9 @@ class SnakeGame {
             
             // 更新难度（根据新长度计算速度）
             this.updateDifficulty();
+            
+            // 更新障碍物颜色（因为蛇长度变化了）
+            this.updateObstacleColors();
             
             // 生成新食物
             this.generateFood();
@@ -1111,6 +1294,13 @@ class SnakeGame {
         
         // 隐藏所有警告墙体
         this.hideAllWarningWalls();
+        
+        // 清理所有障碍物
+        this.clearAllObstacles();
+        
+        // 重置相机抖动和眩晕状态
+        this.cameraShake.isShaking = false;
+        this.snakeStunned.isStunned = false;
     }
     
     updateScore() {
@@ -1154,6 +1344,21 @@ class SnakeGame {
             }
         });
         
+        // 清理障碍物
+        this.obstacles.forEach(obstacle => {
+            this.scene.remove(obstacle.mesh);
+            // 清理障碍物的独立材质
+            obstacle.mesh.material.dispose();
+            
+            if (obstacle.textMesh) {
+                this.scene.remove(obstacle.textMesh);
+                // 清理文本材质和纹理
+                obstacle.textMesh.material.map.dispose();
+                obstacle.textMesh.material.dispose();
+            }
+            // 注意：obstacle.mesh使用的是共享的geometry，不需要dispose
+        });
+        
         // 重置mesh池
         this.meshPool = {
             headMeshes: [],
@@ -1164,6 +1369,7 @@ class SnakeGame {
         
         this.snakeMeshes = [];
         this.foodMesh = null;
+        this.obstacles = [];
         this.warningWalls = {
             top: null,
             bottom: null,
@@ -1172,6 +1378,374 @@ class SnakeGame {
         };
         
         console.log('游戏资源已清理');
+    }
+    
+    // 障碍物系统方法
+    
+    // 生成障碍物
+    generateObstacle() {
+        // 检查是否达到最大障碍物数量
+        if (this.obstacles.length >= this.maxObstacles) {
+            return;
+        }
+        
+        // 随机生成位置，确保不与蛇身和食物重叠
+        let position;
+        let attempts = 0;
+        do {
+            position = {
+                x: Math.floor(Math.random() * this.BOARD_SIZE),
+                y: Math.floor(Math.random() * this.BOARD_SIZE)
+            };
+            attempts++;
+        } while (this.isPositionOccupied(position.x, position.y) && attempts < 50);
+        
+        if (attempts >= 50) {
+            console.log('无法找到合适的障碍物位置');
+            return;
+        }
+        
+        // 生成障碍物等级
+        const level = this.generateObstacleLevel();
+        
+        // 根据等级创建不同颜色的障碍物材质
+        let obstacleMaterial;
+        if (level > this.snake.length) {
+            // 危险等级：红色
+            obstacleMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0xff4444,
+                shininess: 80,
+                emissive: 0x441100
+            });
+        } else {
+            // 安全等级：绿色
+            obstacleMaterial = new THREE.MeshPhongMaterial({ 
+                color: 0x44ff44,
+                shininess: 80,
+                emissive: 0x114400
+            });
+        }
+        
+        // 创建障碍物
+        const obstacle = {
+            x: position.x,
+            y: position.y,
+            level: level,
+            mesh: new THREE.Mesh(this.obstacleGeometry, obstacleMaterial),
+            textMesh: null,
+            id: Date.now() + Math.random() // 唯一ID
+        };
+        
+        // 设置障碍物位置（静止，不浮动）
+        obstacle.mesh.position.set(
+            position.x * this.GRID_SIZE - (this.BOARD_SIZE * this.GRID_SIZE) / 2 + this.GRID_SIZE / 2,
+            this.GRID_SIZE / 2,  // 固定高度，不浮动
+            position.y * this.GRID_SIZE - (this.BOARD_SIZE * this.GRID_SIZE) / 2 + this.GRID_SIZE / 2
+        );
+        obstacle.mesh.castShadow = true;
+        
+        // 创建并添加文本显示
+        obstacle.textMesh = this.createObstacleText(obstacle);
+        
+        this.obstacles.push(obstacle);
+        this.scene.add(obstacle.mesh);
+        this.scene.add(obstacle.textMesh);
+        
+        console.log('生成障碍物:', position.x, position.y, '等级:', level, '蛇长度:', this.snake.length, '当前障碍物数量:', this.obstacles.length);
+    }
+    
+    // 检查位置是否被占用
+    isPositionOccupied(x, y) {
+        // 检查是否与蛇身重叠
+        for (let segment of this.snake) {
+            if (segment.x === x && segment.y === y) {
+                return true;
+            }
+        }
+        
+        // 检查是否与食物重叠
+        if (this.food.x === x && this.food.y === y) {
+            return true;
+        }
+        
+        // 检查是否与其他障碍物重叠
+        for (let obstacle of this.obstacles) {
+            if (obstacle.x === x && obstacle.y === y) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    // 更新障碍物生成
+    updateObstacleSpawning() {
+        if (this.gameState !== 'playing') return;
+        
+        const currentTime = Date.now();
+        
+        // 检查是否到了生成下一个障碍物的时间
+        if (currentTime >= this.nextObstacleTime) {
+            this.generateObstacle();
+            this.scheduleNextObstacle();
+        }
+    }
+    
+    // 安排下一个障碍物的生成时间
+    scheduleNextObstacle() {
+        // 根据游戏难度调整生成频率
+        const difficultyMultiplier = this.getDifficultyMultiplier();
+        const minInterval = this.obstacleMinInterval / difficultyMultiplier;
+        const maxInterval = this.obstacleMaxInterval / difficultyMultiplier;
+        
+        const interval = minInterval + Math.random() * (maxInterval - minInterval);
+        this.nextObstacleTime = Date.now() + interval;
+        
+        console.log('下一个障碍物将在', (interval / 1000).toFixed(1), '秒后生成，难度倍数:', difficultyMultiplier.toFixed(2));
+    }
+    
+    // 获取难度倍数
+    getDifficultyMultiplier() {
+        const baseMultiplier = 1.0;
+        const lengthBonus = (this.snake.length - 3) * 0.1; // 每增加一段，生成频率增加10%
+        const scoreBonus = this.score * 0.001; // 每10分，生成频率增加1%
+        
+        return Math.max(baseMultiplier + lengthBonus + scoreBonus, 0.3); // 最少是原来的3倍频率
+    }
+    
+    // 检查障碍物碰撞
+    checkObstacleCollision() {
+        const head = this.snake[0];
+        const collisionRadius = this.GRID_SIZE * 0.7;
+        
+        for (let i = this.obstacles.length - 1; i >= 0; i--) {
+            const obstacle = this.obstacles[i];
+            const obstacleWorldX = obstacle.x * this.GRID_SIZE;
+            const obstacleWorldY = obstacle.y * this.GRID_SIZE;
+            
+            const dx = head.actualX - obstacleWorldX;
+            const dy = head.actualY - obstacleWorldY;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            if (distance < collisionRadius) {
+                // 碰撞发生
+                this.handleObstacleCollision(obstacle, i);
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    // 处理障碍物碰撞
+    handleObstacleCollision(obstacle, index) {
+        const snakeLength = this.snake.length;
+        const obstacleLevel = obstacle.level;
+        
+        console.log('碰撞障碍物！蛇长度:', snakeLength, '障碍物等级:', obstacleLevel);
+        
+        // 移除障碍物（不管结果如何，障碍物都会消失）
+        this.scene.remove(obstacle.mesh);
+        this.scene.remove(obstacle.textMesh);
+        this.obstacles.splice(index, 1);
+        
+        if (snakeLength > obstacleLevel) {
+            // 蛇长度大于障碍物等级：获得奖励
+            console.log('🎉 ✅ 吞噬成功！蛇长度 +2，分数 +20');
+            console.log(`📈 蛇长度: ${snakeLength} → ${snakeLength + 2}`);
+            
+            // 增加蛇的长度（+2段）
+            for (let i = 0; i < 2; i++) {
+                const tail = this.snake[this.snake.length - 1];
+                const newSegment = {
+                    x: tail.x,
+                    y: tail.y,
+                    actualX: tail.actualX,
+                    actualY: tail.actualY,
+                    targetX: tail.actualX,
+                    targetY: tail.actualY,
+                    rotation: tail.rotation
+                };
+                this.snake.push(newSegment);
+            }
+            
+            // 增加分数
+            this.score += 20; // 比吃食物多获得分数
+            this.updateScore();
+            
+            // 重新创建蛇的mesh
+            this.createSnake();
+            
+            // 更新难度
+            this.updateDifficulty();
+            
+            // 更新障碍物颜色（因为蛇长度变化了）
+            this.updateObstacleColors();
+            
+            // 轻微的成功反馈抖动
+            this.startCameraShake(0.3, 200);
+            
+        } else {
+            // 蛇长度小于等于障碍物等级：受到惩罚 - 长度减半
+            console.log('💥 ❌ 碰撞红色障碍物！蛇长度减半');
+            console.log(`😵 蛇长度 ${snakeLength} < 障碍物等级 ${obstacleLevel}`);
+            
+            // 计算新的蛇长度（减半，但至少保持3段）
+            const newLength = Math.max(3, Math.floor(snakeLength / 2));
+            console.log(`📉 蛇长度: ${snakeLength} → ${newLength}`);
+            
+            // 裁剪蛇身到新长度
+            this.snake = this.snake.slice(0, newLength);
+            
+            // 重新创建蛇的mesh
+            this.createSnake();
+            
+            // 更新难度（因为蛇长度变化了）
+            this.updateDifficulty();
+            
+            // 更新障碍物颜色（因为蛇长度变化了）
+            this.updateObstacleColors();
+            
+            // 触发猛烈的相机抖动
+            this.startCameraShake(1.2, 500); // 更强的抖动
+            
+            // 触发蛇头眩晕
+            this.startSnakeStun(1000); // 眩晕1秒
+        }
+    }
+    
+    // 开始相机抖动
+    startCameraShake(intensity, duration) {
+        this.cameraShake.isShaking = true;
+        this.cameraShake.intensity = intensity;
+        this.cameraShake.duration = duration;
+        this.cameraShake.elapsed = 0;
+    }
+    
+    // 开始蛇头眩晕
+    startSnakeStun(duration) {
+        this.snakeStunned.isStunned = true;
+        this.snakeStunned.duration = duration;
+        this.snakeStunned.elapsed = 0;
+        this.snakeStunned.originalSpeed = this.moveSpeed;
+        
+        // 眩晕期间减速
+        this.moveSpeed *= 0.3;
+    }
+    
+    // 更新相机抖动
+    updateCameraShake() {
+        if (!this.cameraShake.isShaking) return;
+        
+        this.cameraShake.elapsed += 16; // 假设60FPS
+        
+        if (this.cameraShake.elapsed >= this.cameraShake.duration) {
+            this.cameraShake.isShaking = false;
+            // 重置第三人称相机的抖动偏移
+            this.thirdPersonCamera.shakeOffset = null;
+            return;
+        }
+        
+        // 计算抖动强度（随时间衰减）
+        const progress = this.cameraShake.elapsed / this.cameraShake.duration;
+        const currentIntensity = this.cameraShake.intensity * (1 - progress);
+        
+        // 应用随机抖动偏移到第三人称相机
+        const shakeX = (Math.random() - 0.5) * currentIntensity * 8;
+        const shakeY = (Math.random() - 0.5) * currentIntensity * 8;
+        const shakeZ = (Math.random() - 0.5) * currentIntensity * 8;
+        
+        // 为第三人称相机添加抖动偏移
+        if (!this.thirdPersonCamera.shakeOffset) {
+            this.thirdPersonCamera.shakeOffset = new THREE.Vector3();
+        }
+        
+        this.thirdPersonCamera.shakeOffset.set(shakeX, shakeY, shakeZ);
+    }
+    
+    // 更新蛇头眩晕
+    updateSnakeStun() {
+        if (!this.snakeStunned.isStunned) return;
+        
+        this.snakeStunned.elapsed += 16; // 假设60FPS
+        
+        if (this.snakeStunned.elapsed >= this.snakeStunned.duration) {
+            // 眩晕结束，恢复速度
+            this.snakeStunned.isStunned = false;
+            this.moveSpeed = this.snakeStunned.originalSpeed;
+            console.log('眩晕结束，速度恢复');
+        }
+    }
+    
+    // 清理所有障碍物
+    clearAllObstacles() {
+        this.obstacles.forEach(obstacle => {
+            this.scene.remove(obstacle.mesh);
+            if (obstacle.textMesh) {
+                this.scene.remove(obstacle.textMesh);
+            }
+        });
+        this.obstacles = [];
+        this.nextObstacleTime = 0;
+    }
+    
+    // 更新障碍物显示（移除动画，静止显示）
+    updateObstacleDisplay() {
+        this.obstacles.forEach((obstacle, index) => {
+            // 更新文本朝向（保持面向相机）
+            if (obstacle.textMesh) {
+                obstacle.textMesh.lookAt(this.camera.position);
+            }
+        });
+    }
+    
+    // 动态更新所有障碍物的危险等级和颜色
+    updateObstacleColors() {
+        this.obstacles.forEach((obstacle) => {
+            // 判断当前障碍物是否危险
+            const isDangerous = obstacle.level >= this.snake.length;
+            
+            // 创建新的材质
+            let newMaterial;
+            if (isDangerous) {
+                // 危险等级：红色
+                newMaterial = new THREE.MeshPhongMaterial({ 
+                    color: 0xff4444,
+                    shininess: 80,
+                    emissive: 0x441100
+                });
+            } else {
+                // 安全等级：绿色
+                newMaterial = new THREE.MeshPhongMaterial({ 
+                    color: 0x44ff44,
+                    shininess: 80,
+                    emissive: 0x114400
+                });
+            }
+            
+            // 清理旧材质
+            obstacle.mesh.material.dispose();
+            
+            // 应用新材质
+            obstacle.mesh.material = newMaterial;
+            
+            // 更新文本显示
+            if (obstacle.textMesh) {
+                // 清理旧纹理和材质
+                obstacle.textMesh.material.map.dispose();
+                obstacle.textMesh.material.dispose();
+                
+                // 创建新的文本纹理和材质
+                const texture = this.createTextTexture(`LV ${obstacle.level}`, obstacle.level);
+                const material = new THREE.MeshBasicMaterial({ 
+                    map: texture, 
+                    transparent: true,
+                    alphaTest: 0.1
+                });
+                
+                obstacle.textMesh.material = material;
+            }
+        });
     }
     
     animate() {
@@ -1190,6 +1764,9 @@ class SnakeGame {
                 this.foodMesh.rotation.y += 0.02 * (deltaTime / 16.67); // 标准化到60fps
                 this.foodMesh.position.y = this.GRID_SIZE / 2 + Math.sin(currentTime * 0.005) * 3;
             }
+            
+            // 更新障碍物显示
+            this.updateObstacleDisplay();
             
             this.renderer.render(this.scene, this.camera);
             
